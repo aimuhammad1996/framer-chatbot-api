@@ -1,35 +1,49 @@
+import { createClient } from "@supabase/supabase-js"
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({ error: "Method Not Allowed" })
   }
 
-  const { message, session_id } = req.body || {};
+  const { message, session_id } = req.body
 
   if (!message || !session_id) {
-    return res.status(400).json({ error: "Missing message or session_id" });
+    return res.status(400).json({ error: "Missing input" })
   }
 
-  try {
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: "You are a helpful assistant." },
-          { role: "user", content: message }
-        ]
-      }),
-    });
+  const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+  )
 
-    const data = await openaiRes.json();
-    const reply = data?.choices?.[0]?.message?.content || "Something went wrong.";
+  const { data: pastMessages } = await supabase
+    .from("messages")
+    .select("role, content")
+    .eq("session_id", session_id)
+    .order("created_at", { ascending: true })
 
-    return res.status(200).json({ reply });
-  } catch (error) {
-    return res.status(500).json({ error: "Server error", detail: error.message });
-  }
+  const messages = pastMessages || []
+  messages.push({ role: "user", content: message })
+
+  const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "gpt-3.5-turbo",
+      messages: messages
+    })
+  })
+
+  const data = await openaiRes.json()
+  const reply = data.choices?.[0]?.message?.content || "Something went wrong."
+
+  await supabase.from("messages").insert([
+    { session_id, role: "user", content: message },
+    { session_id, role: "assistant", content: reply }
+  ])
+
+  res.status(200).json({ reply })
 }
